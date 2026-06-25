@@ -2,6 +2,14 @@ import type { VCP } from "./vcp";
 
 const METER_VALUES_INTERVAL_SEC = 15;
 
+// Simulated charging power (kW) used to derive a realistic
+// Energy.Active.Import.Register (kWh) from elapsed time, instead of the previous
+// fake counter (elapsedMs/100). Kept high enough that a short test session
+// accrues enough energy to clear payment-gateway minimums at typical tariffs;
+// override with SIMULATED_CHARGE_POWER_KW.
+const SIMULATED_CHARGE_POWER_KW =
+  Number(process.env.SIMULATED_CHARGE_POWER_KW) || 60;
+
 type TransactionId = string | number;
 
 interface TransactionState {
@@ -65,11 +73,15 @@ export class TransactionManager {
     this.transactions.delete(transactionId);
   }
 
+  // Cumulative energy register in kWh: power(kW) * elapsed time(h). Consumers
+  // that need Wh should multiply by 1000.
   getMeterValue(transactionId: TransactionId) {
     const transaction = this.transactions.get(transactionId);
     if (!transaction) {
       return 0;
     }
-    return (new Date().getTime() - transaction.startedAt.getTime()) / 100;
+    const elapsedHours =
+      (new Date().getTime() - transaction.startedAt.getTime()) / 3_600_000;
+    return elapsedHours * SIMULATED_CHARGE_POWER_KW;
   }
 }

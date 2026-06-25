@@ -46,7 +46,8 @@ class RequestStopTransactionOcppIncoming extends OcppIncoming<
       startTime: transaction.startedAt,
       startEnergy: 0,
       endTime: new Date(),
-      endEnergy: vcp.transactionManager.getMeterValue(transactionId) / 1000,
+      // getMeterValue is already kWh
+      endEnergy: vcp.transactionManager.getMeterValue(transactionId),
       idTag: transaction.idTag,
     });
 
@@ -69,6 +70,13 @@ class RequestStopTransactionOcppIncoming extends OcppIncoming<
             sampledValue: [
               {
                 value: vcp.transactionManager.getMeterValue(transactionId),
+                // Match the periodic samples so the CSMS/payment service reads a
+                // consistent unit. Omitting these made consumers fall back to the
+                // OCPP default (Wh) -> energy read 1000x too small.
+                measurand: "Energy.Active.Import.Register",
+                unitOfMeasure: {
+                  unit: "kWh",
+                },
                 signedMeterValue: {
                   signedMeterData: Buffer.from(ocmf).toString("base64"),
                   signingMethod: "", // Already included in the signedMeterData

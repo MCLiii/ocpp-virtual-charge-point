@@ -69,6 +69,20 @@ export class VCP {
         (c) => {
           const validated = c.req.valid("json");
           this.send(call(validated.action, validated.payload));
+          // A manually-injected Transaction.End (e.g. from vcp.sh) only sends the
+          // OCPP message — it does not touch the internal charging loop. Without
+          // this, the meter-values timer started on RemoteStart keeps emitting
+          // Updated events for an already-ended session. Stop the internal
+          // transaction so the simulator actually stops "charging".
+          if (
+            validated.action === "TransactionEvent" &&
+            validated.payload?.eventType === "Ended"
+          ) {
+            const txId = validated.payload?.transactionInfo?.transactionId;
+            if (txId !== undefined && txId !== null) {
+              this.transactionManager.stopTransaction(txId);
+            }
+          }
           return c.text("OK");
         },
       );
