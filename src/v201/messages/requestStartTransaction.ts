@@ -1,14 +1,12 @@
-import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { type OcppCall, OcppIncoming } from "../../ocppMessage";
 import type { VCP } from "../../vcp";
+import { endChargingSession, startChargingSession } from "../chargingSession";
 import {
   ChargingProfileSchema,
   IdTokenTypeSchema,
   StatusInfoTypeSchema,
 } from "./_common";
-import { statusNotificationOcppOutgoing } from "./statusNotification";
-import { transactionEventOcppOutgoing } from "./transactionEvent";
 
 const RequestStartTransactionReqSchema = z.object({
   evseId: z.number().int().nullish(),
@@ -37,100 +35,38 @@ class RequestStartTransactionOcppIncoming extends OcppIncoming<
     const transactionEvseId = call.payload.evseId ?? 1;
     const transactionConnectorId = 1;
 
-    // Check if a transaction is already running on this connector
+    // A prior session may still be running on this connector (e.g. it was never
+    // unplugged in testing). Rather than permanently rejecting every new remote
+    // start, supersede it: end the stale session (settles it) and free the
+    // connector so this new authorization can proceed.
     if (
       !vcp.transactionManager.canStartNewTransaction(transactionConnectorId)
     ) {
-      vcp.respond(
-        this.response(call, {
-          status: "Rejected",
-        }),
-      );
-      return;
+      const stale = Array.from(
+        vcp.transactionManager.transactions.values(),
+      )[0];
+      if (stale) {
+        endChargingSession(vcp, String(stale.transactionId));
+      }
     }
 
-    const transactionId = uuidv4();
-    vcp.transactionManager.startTransaction(vcp, {
-      transactionId: transactionId,
-      idTag: call.payload.idToken.idToken,
+    vcp.respond(this.response(call, { status: "Accepted" }));
+
+    const start = {
       evseId: transactionEvseId,
       connectorId: transactionConnectorId,
-      meterValuesCallback: async (transactionStatus) => {
-        vcp.send(
-          transactionEventOcppOutgoing.request({
-            eventType: "Updated",
-            timestamp: new Date().toISOString(),
-            seqNo: 0,
-            triggerReason: "MeterValuePeriodic",
-            transactionInfo: {
-              transactionId: transactionId,
-            },
-            evse: {
-              id: transactionEvseId,
-              connectorId: transactionConnectorId,
-            },
-            meterValue: [
-              {
-                timestamp: new Date().toISOString(),
-                sampledValue: [
-                  {
-                    value: transactionStatus.meterValue,
-                    measurand: "Energy.Active.Import.Register",
-                    unitOfMeasure: {
-                      unit: "kWh",
-                    },
-                  },
-                ],
-              },
-            ],
-          }),
-        );
-      },
-    });
-    vcp.respond(
-      this.response(call, {
-        status: "Accepted",
-      }),
-    );
-    vcp.send(
-      statusNotificationOcppOutgoing.request({
-        evseId: transactionEvseId,
-        connectorId: transactionConnectorId,
-        connectorStatus: "Occupied",
-        timestamp: new Date().toISOString(),
-      }),
-    );
-    vcp.send(
-      transactionEventOcppOutgoing.request({
-        eventType: "Started",
-        timestamp: new Date().toISOString(),
-        seqNo: 0,
-        triggerReason: "Authorized",
-        transactionInfo: {
-          transactionId: transactionId,
-          remoteStartId: call.payload.remoteStartId,
-        },
-        idToken: call.payload.idToken,
-        evse: {
-          id: transactionEvseId,
-          connectorId: transactionConnectorId,
-        },
-        meterValue: [
-          {
-            timestamp: new Date().toISOString(),
-            sampledValue: [
-              {
-                value: 0,
-                measurand: "Energy.Active.Import.Register",
-                unitOfMeasure: {
-                  unit: "kWh",
-                },
-              },
-            ],
-          },
-        ],
-      }),
-    );
+      idToken: call.payload.idToken,
+      remoteStartId: call.payload.remoteStartId,
+    };
+
+    if (vcp.pluggedIn) {
+      // Cable already plugged in -> begin charging immediately.
+      startChargingSession(vcp, { ...start, triggerReason: "RemoteStart" });
+    } else {
+      // Pay-before-plug: arm the charger and wait. The session starts
+      // automatically when the driver plugs in (see the Plug admin action).
+      vcp.pendingRemoteStart = start;
+    }
   };
 }
 

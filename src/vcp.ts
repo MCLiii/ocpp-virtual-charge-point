@@ -23,6 +23,12 @@ import {
 import { TransactionManager } from "./transactionManager";
 import { heartbeatOcppMessage } from "./v16/messages/heartbeat";
 import { close } from "./close";
+import {
+  startChargingSession,
+  endChargingSession,
+  type IdToken,
+} from "./v201/chargingSession";
+import { statusNotificationOcppOutgoing } from "./v201/messages/statusNotification";
 
 interface VCPOptions {
   ocppVersion: OcppVersion;
@@ -52,6 +58,17 @@ export class VCP {
 
   transactionManager = new TransactionManager();
 
+  // Connector plug state (single-connector simulator). Pay-before-plug: a remote
+  // start can arrive while unplugged; we hold it here and begin charging only
+  // once the cable is plugged in.
+  pluggedIn = false;
+  pendingRemoteStart: {
+    evseId?: number | null;
+    connectorId?: number;
+    idToken?: IdToken | null;
+    remoteStartId?: number | null;
+  } | null = null;
+
   constructor(private vcpOptions: VCPOptions) {
     this.messageHandler = resolveMessageHandler(vcpOptions.ocppVersion);
     if (vcpOptions.adminPort) {
@@ -68,12 +85,22 @@ export class VCP {
         ),
         (c) => {
           const validated = c.req.valid("json");
+
+          // Synthetic (non-OCPP) actions that model the physical cable so the
+          // CLI can drive the real flow: pay -> arm -> plug -> auto-start.
+          if (validated.action === "Plug") {
+            this.plugIn();
+            return c.text("OK");
+          }
+          if (validated.action === "Unplug") {
+            this.unplug();
+            return c.text("OK");
+          }
+
           this.send(call(validated.action, validated.payload));
-          // A manually-injected Transaction.End (e.g. from vcp.sh) only sends the
-          // OCPP message — it does not touch the internal charging loop. Without
-          // this, the meter-values timer started on RemoteStart keeps emitting
-          // Updated events for an already-ended session. Stop the internal
-          // transaction so the simulator actually stops "charging".
+          // A manually-injected Transaction.End (e.g. from the CLI's "stop") only
+          // sends the OCPP message — it does not touch the internal charging loop.
+          // Stop the internal transaction so the simulator actually stops charging.
           if (
             validated.action === "TransactionEvent" &&
             validated.payload?.eventType === "Ended"
@@ -90,6 +117,38 @@ export class VCP {
         fetch: adminApi.fetch,
         port: vcpOptions.adminPort,
       });
+    }
+  }
+
+  /** Cable plugged in. Starts the armed (paid) session, or an unauthorized
+   * scan-&-charge session if nothing was armed. */
+  plugIn() {
+    this.pluggedIn = true;
+    if (this.pendingRemoteStart) {
+      const pending = this.pendingRemoteStart;
+      this.pendingRemoteStart = null;
+      startChargingSession(this, { ...pending, triggerReason: "RemoteStart" });
+    } else {
+      startChargingSession(this, { triggerReason: "CablePluggedIn" });
+    }
+  }
+
+  /** Cable unplugged. Ends any running session (Ended + capture) and disarms. */
+  unplug() {
+    this.pluggedIn = false;
+    this.pendingRemoteStart = null;
+    const active = Array.from(this.transactionManager.transactions.values())[0];
+    if (active) {
+      endChargingSession(this, String(active.transactionId));
+    } else {
+      this.send(
+        statusNotificationOcppOutgoing.request({
+          evseId: 1,
+          connectorId: 1,
+          connectorStatus: "Available",
+          timestamp: new Date().toISOString(),
+        }),
+      );
     }
   }
 

@@ -1,10 +1,8 @@
 import { z } from "zod";
-import { generateOCMF, getOCMFPublicKey } from "../../ocmfGenerator";
 import { type OcppCall, OcppIncoming } from "../../ocppMessage";
 import type { VCP } from "../../vcp";
+import { endChargingSession } from "../chargingSession";
 import { StatusInfoTypeSchema } from "./_common";
-import { statusNotificationOcppOutgoing } from "./statusNotification";
-import { transactionEventOcppOutgoing } from "./transactionEvent";
 
 const RequestStopTransactionReqSchema = z.object({
   transactionId: z.string(),
@@ -26,79 +24,14 @@ class RequestStopTransactionOcppIncoming extends OcppIncoming<
     call: OcppCall<z.infer<RequestStopTransactionReqType>>,
   ): Promise<void> => {
     const { transactionId } = call.payload;
-    const transaction = vcp.transactionManager.transactions.get(transactionId);
-    if (!transaction) {
-      vcp.respond(
-        this.response(call, {
-          status: "Rejected",
-        }),
-      );
+    if (!vcp.transactionManager.transactions.get(transactionId)) {
+      vcp.respond(this.response(call, { status: "Rejected" }));
       return;
     }
-
-    vcp.respond(
-      this.response(call, {
-        status: "Accepted",
-      }),
-    );
-
-    const ocmf = generateOCMF({
-      startTime: transaction.startedAt,
-      startEnergy: 0,
-      endTime: new Date(),
-      // getMeterValue is already kWh
-      endEnergy: vcp.transactionManager.getMeterValue(transactionId),
-      idTag: transaction.idTag,
-    });
-
-    vcp.send(
-      transactionEventOcppOutgoing.request({
-        eventType: "Ended",
-        timestamp: new Date().toISOString(),
-        seqNo: 0,
-        triggerReason: "RemoteStop",
-        transactionInfo: {
-          transactionId: transactionId,
-        },
-        evse: {
-          id: transaction.evseId ?? 1,
-          connectorId: transaction.connectorId,
-        },
-        meterValue: [
-          {
-            timestamp: new Date().toISOString(),
-            sampledValue: [
-              {
-                value: vcp.transactionManager.getMeterValue(transactionId),
-                // Match the periodic samples so the CSMS/payment service reads a
-                // consistent unit. Omitting these made consumers fall back to the
-                // OCPP default (Wh) -> energy read 1000x too small.
-                measurand: "Energy.Active.Import.Register",
-                unitOfMeasure: {
-                  unit: "kWh",
-                },
-                signedMeterValue: {
-                  signedMeterData: Buffer.from(ocmf).toString("base64"),
-                  signingMethod: "", // Already included in the signedMeterData
-                  encodingMethod: "OCMF",
-                  publicKey: getOCMFPublicKey().toString("base64"),
-                },
-                context: "Transaction.End",
-              },
-            ],
-          },
-        ],
-      }),
-    );
-    vcp.send(
-      statusNotificationOcppOutgoing.request({
-        evseId: transaction.evseId ?? 1,
-        connectorId: transaction.connectorId,
-        connectorStatus: "Available",
-        timestamp: new Date().toISOString(),
-      }),
-    );
-    vcp.transactionManager.stopTransaction(transactionId);
+    vcp.respond(this.response(call, { status: "Accepted" }));
+    // The cable is logically still in, but the CSMS stopped the session.
+    vcp.pluggedIn = false;
+    endChargingSession(vcp, transactionId);
   };
 }
 
