@@ -19,8 +19,8 @@ async function main(): Promise<VCP> {
     bootNotificationOcppOutgoing.request({
       reason: "PowerUp",
       chargingStation: {
-        model: "VirtualChargePoint",
-        vendorName: "Solidstudio",
+        model: process.env.CP_MODEL ?? "VirtualChargePoint",
+        vendorName: process.env.CP_VENDOR_NAME ?? "Solidstudio",
       },
     }),
   );

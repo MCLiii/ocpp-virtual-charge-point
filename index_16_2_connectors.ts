@@ -17,8 +17,8 @@ const vcp = new VCP({
   await vcp.connect();
   vcp.send(
     bootNotificationOcppMessage.request({
-      chargePointVendor: "Solidstudio",
-      chargePointModel: "VirtualChargePoint",
+      chargePointVendor: process.env.CP_VENDOR_NAME ?? "Solidstudio",
+      chargePointModel: process.env.CP_MODEL ?? "VirtualChargePoint",
       chargePointSerialNumber: "S001",
       firmwareVersion: "1.0.0",
     }),
