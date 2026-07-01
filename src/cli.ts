@@ -94,52 +94,70 @@ async function showStatus() {
   console.log(`charger: ${CP_ID}   dashboard: ${OPERATOR_UI}`);
 }
 
+async function renderQr(data: string) {
+  const terminalQr = await QRCode.toString(data, { type: "terminal", small: true });
+  console.log(`\n${C.green}Scan to pay:${C.off}\n`);
+  console.log(terminalQr);
+  console.log(`${C.green}or open:${C.off} ${data}`);
+  console.log("\ntest card: 4242 4242 4242 4242 · any future expiry · any CVC");
+  console.log("after paying, the charger auto-starts; option 3 (unplug) settles payment");
+}
+
 async function showPaymentLink() {
   process.stdout.write("waiting for the QR / payment link from the payment service");
-  let qr = "";
+  // Two shapes reach the charger depending on its display adapter:
+  //  - standard: SetDisplayMessage carrying a QR *image* URL (…/assets/<id>)
+  //  - Renova (rcd): DataTransfer carrying the checkout *url* directly, which the
+  //    DataTransfer handler logs as "Renova QR displayed: <url>".
+  // Use whichever appeared most recently in the log.
+  let assetUrl = "";
+  let renovaUrl = "";
+  let kind: "asset" | "renova" | "" = "";
   for (let i = 0; i < 10; i++) {
     if (existsSync(LOG_FILE)) {
-      const m = readFileSync(LOG_FILE, "utf8")
-        .split("\n")
-        .map((l) => l.match(/https?:\/\/[^" ]+\/assets\/[A-Za-z0-9-]+/))
-        .filter(Boolean)
-        .pop();
-      if (m) {
-        qr = m[0];
-        break;
+      for (const l of readFileSync(LOG_FILE, "utf8").split("\n")) {
+        const a = l.match(/https?:\/\/[^" ]+\/assets\/[A-Za-z0-9-]+/);
+        if (a) {
+          assetUrl = a[0];
+          kind = "asset";
+        }
+        const r = l.match(/Renova QR displayed: (\S+)/);
+        if (r) {
+          renovaUrl = r[1];
+          kind = "renova";
+        }
       }
+      if (kind) break;
     }
     process.stdout.write(".");
     await new Promise((r) => setTimeout(r, 2000));
   }
   console.log();
-  if (!qr) {
+  if (!kind) {
     console.log(`${C.yellow}no QR arrived — did the plug-in start carry no RFID token (scan & charge), and is the payment service seeded for this charger?${C.off}`);
     return;
   }
 
-  // Decode the payment service's QR image and re-render it right here in the
-  // terminal, so it can be scanned with a phone without opening anything.
+  // Renova: the checkout url arrives directly, so render it straight away.
+  if (kind === "renova") {
+    await renderQr(renovaUrl);
+    return;
+  }
+
+  // Standard: fetch the QR image, decode it, and re-render in the terminal so it
+  // can be scanned with a phone without opening anything.
   try {
-    const res = await fetch(qr, { signal: AbortSignal.timeout(10000) });
+    const res = await fetch(assetUrl, { signal: AbortSignal.timeout(10000) });
     const png = PNG.sync.read(Buffer.from(await res.arrayBuffer()));
     const decoded = jsQR(new Uint8ClampedArray(png.data), png.width, png.height);
     if (decoded?.data) {
-      const terminalQr = await QRCode.toString(decoded.data, {
-        type: "terminal",
-        small: true,
-      });
-      console.log(`\n${C.green}Scan to pay:${C.off}\n`);
-      console.log(terminalQr);
-      console.log(`${C.green}or open:${C.off} ${decoded.data}`);
+      await renderQr(decoded.data);
     } else {
-      console.log(`${C.yellow}couldn't decode the QR — open the image: ${qr}${C.off}`);
+      console.log(`${C.yellow}couldn't decode the QR — open the image: ${assetUrl}${C.off}`);
     }
   } catch (e) {
-    console.log(`${C.yellow}couldn't fetch/decode the QR (${(e as Error).message}) — image: ${qr}${C.off}`);
+    console.log(`${C.yellow}couldn't fetch/decode the QR (${(e as Error).message}) — image: ${assetUrl}${C.off}`);
   }
-  console.log("\ntest card: 4242 4242 4242 4242 · any future expiry · any CVC");
-  console.log("after paying, the charger auto-starts; option 3 (unplug) settles payment");
 }
 
 async function customMessage(ask: (q: string) => Promise<string>) {
