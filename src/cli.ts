@@ -103,6 +103,42 @@ async function renderQr(data: string) {
   console.log("after paying, the charger auto-starts; option 3 (unplug) settles payment");
 }
 
+/** Print a debug panel above the QR: what reached the charger and how. */
+function printPaymentDebug(rows: Array<[string, unknown]>) {
+  console.log(`${C.dim}── payment page (debug) ──────────────────────────────${C.off}`);
+  console.log(
+    `${C.dim}charger  :${C.off} ${CP_ID}  vendor=${process.env.CP_VENDOR_NAME ?? "?"}  model=${process.env.CP_MODEL ?? "?"}`,
+  );
+  for (const [k, v] of rows) {
+    if (v === undefined || v === null || v === "") continue;
+    console.log(`${C.dim}${k.padEnd(9)}:${C.off} ${v}`);
+  }
+  console.log(`${C.dim}──────────────────────────────────────────────────────${C.off}`);
+}
+
+/** Parse the most recent Renova DataTransfer (rcd/qrcode_req) payload from the
+ * log, so option 4 can show connector/evse/price alongside the url. */
+function latestRenovaData(
+  lines: string[],
+): (Record<string, unknown> & { _ts?: string }) | null {
+  let found: (Record<string, unknown> & { _ts?: string }) | null = null;
+  for (const l of lines) {
+    if (!l.includes('"DataTransfer"') || !l.includes("qrcode_req")) continue;
+    const start = l.indexOf("[");
+    if (start < 0) continue;
+    try {
+      const arr = JSON.parse(l.slice(start).trim()) as unknown[];
+      const payload = arr[3] as { data?: unknown };
+      const data =
+        typeof payload.data === "string" ? JSON.parse(payload.data) : payload.data;
+      found = { ...data, _ts: l.slice(0, 19) };
+    } catch {
+      /* skip lines we can't parse */
+    }
+  }
+  return found;
+}
+
 async function showPaymentLink() {
   process.stdout.write("waiting for the QR / payment link from the payment service");
   // Two shapes reach the charger depending on its display adapter:
@@ -111,7 +147,9 @@ async function showPaymentLink() {
   //    DataTransfer handler logs as "Renova QR displayed: <url>".
   // Use whichever appeared most recently in the log.
   let assetUrl = "";
+  let assetLine = "";
   let renovaUrl = "";
+  let renovaLine = "";
   let kind: "asset" | "renova" | "" = "";
   for (let i = 0; i < 10; i++) {
     if (existsSync(LOG_FILE)) {
@@ -119,11 +157,13 @@ async function showPaymentLink() {
         const a = l.match(/https?:\/\/[^" ]+\/assets\/[A-Za-z0-9-]+/);
         if (a) {
           assetUrl = a[0];
+          assetLine = l;
           kind = "asset";
         }
         const r = l.match(/Renova QR displayed: (\S+)/);
         if (r) {
           renovaUrl = r[1];
+          renovaLine = l;
           kind = "renova";
         }
       }
@@ -140,7 +180,20 @@ async function showPaymentLink() {
 
   // Renova: the checkout url arrives directly, so render it straight away.
   if (kind === "renova") {
-    await renderQr(renovaUrl);
+    const d = latestRenovaData(readFileSync(LOG_FILE, "utf8").split("\n")) ?? {};
+    const url = (d.url as string) || renovaUrl;
+    printPaymentDebug([
+      ["QR via", "Renova DataTransfer (vendorId=rcd, messageId=qrcode_req)"],
+      ["checkout", url],
+      [
+        "tariff",
+        d.price != null ? `${d.price} ${(d.unit as string) ?? ""}`.trim() : undefined,
+      ],
+      ["connector", d.connector_id],
+      ["evse_id", d.evse_id],
+      ["received", (d._ts as string) || renovaLine.slice(0, 19)],
+    ]);
+    await renderQr(url);
     return;
   }
 
@@ -151,6 +204,12 @@ async function showPaymentLink() {
     const png = PNG.sync.read(Buffer.from(await res.arrayBuffer()));
     const decoded = jsQR(new Uint8ClampedArray(png.data), png.width, png.height);
     if (decoded?.data) {
+      printPaymentDebug([
+        ["QR via", "SetDisplayMessage (image / URI)"],
+        ["checkout", decoded.data],
+        ["image", assetUrl],
+        ["received", assetLine.slice(0, 19)],
+      ]);
       await renderQr(decoded.data);
     } else {
       console.log(`${C.yellow}couldn't decode the QR — open the image: ${assetUrl}${C.off}`);
