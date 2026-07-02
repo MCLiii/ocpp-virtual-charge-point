@@ -21,6 +21,10 @@ async function main(): Promise<VCP> {
       chargingStation: {
         model: process.env.CP_MODEL ?? "VirtualChargePoint",
         vendorName: process.env.CP_VENDOR_NAME ?? "Solidstudio",
+        // Serial drives the claim-by-serial onboarding flow in the CSMS.
+        ...(process.env.CP_SERIAL_NUMBER
+          ? { serialNumber: process.env.CP_SERIAL_NUMBER }
+          : {}),
       },
     }),
   );
