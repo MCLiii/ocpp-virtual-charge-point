@@ -120,14 +120,28 @@ export class VCP {
     }
   }
 
-  /** Cable plugged in. Starts the armed (paid) session, or an unauthorized
-   * scan-&-charge session if nothing was armed. */
+  /** Cable plugged in. Starts the armed (paid) session; otherwise behavior
+   * follows the emulated TxStartPoint (OCPP 2.0.1 TxCtrlr):
+   *   Authorized (default) -- the connector goes Occupied but NO transaction
+   *     starts until the CSMS authorizes it (payment -> RequestStartTransaction,
+   *     or an RFID Authorize). Matches the "payment before charging" policy.
+   *   EVConnected -- legacy pay-while-charging: an unauthorized session starts
+   *     immediately (CP_TX_START_POINT=EVConnected restores this). */
   plugIn() {
     this.pluggedIn = true;
     if (this.pendingRemoteStart) {
       const pending = this.pendingRemoteStart;
       this.pendingRemoteStart = null;
       startChargingSession(this, { ...pending, triggerReason: "RemoteStart" });
+    } else if ((process.env.CP_TX_START_POINT ?? "Authorized") === "Authorized") {
+      this.send(
+        statusNotificationOcppOutgoing.request({
+          evseId: 1,
+          connectorId: 1,
+          connectorStatus: "Occupied",
+          timestamp: new Date().toISOString(),
+        }),
+      );
     } else {
       startChargingSession(this, { triggerReason: "CablePluggedIn" });
     }

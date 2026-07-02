@@ -456,7 +456,7 @@ async function customMessage(ask: (q: string) => Promise<string>) {
 const MENU = `
 ${C.green}Ivora VCP console${C.off} — charger ${CP_ID}  (dashboard: ${OPERATOR_UI})
   1) status              simulator + CSMS link, identity, session, QR, warnings
-  2) plug in             start charging (uses a paid auth if armed, else scan & charge)
+  2) plug in             occupy connector (charging starts after payment / RFID)
   3) unplug              stop charging & settle payment
   4) show payment link   scan & charge QR (after an unauthorized plug-in)
   5) authorize           RFID tap (AABBCCDD)
@@ -483,7 +483,7 @@ async function main() {
         break;
       case "2":
         await post("Plug", {});
-        console.log(`${C.dim}if no paid authorization was armed, this is a scan & charge plug-in — use option 4 for the QR${C.off}`);
+        console.log(`${C.dim}payment first: scan the standing QR (option 4) and pay — charging starts on payment confirmation${C.off}`);
         break;
       case "3":
         await post("Unplug", {});
